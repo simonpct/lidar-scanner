@@ -1,0 +1,25 @@
+# Core
+open3d>=0.18.0          # Point clouds, ICP, colorisation, visualisation
+numpy>=1.26.0           # Calculs
+laspy[laszip]>=2.5.0    # Lecture/écriture LAS/LAZ
+Pillow>=10.0.0          # Chargement et sampling d'images
+scipy>=1.12.0           # KD-trees, nearest neighbor
+
+# Geospatial
+pyproj>=3.6.0           # Transformations de coordonnées (WGS84 <-> local)
+gpxpy>=1.6.0            # Parsing de tracks GPS
+
+# GoPro Max control (legacy WiFi API)
+goprocam>=4.2.0         # Contrôle GoPro via WiFi (trigger, download, settings)
+requests>=2.31.0        # HTTP pour l'API GoPro
+
+# Image processing
+opencv-python>=4.9.0    # Traitement d'image, feature matching
+
+# Visualisation
+pyvista>=0.43.0         # Visualisation 3D (VTK)
+matplotlib>=3.8.0       # Graphiques 2D
+
+# Optionnel - décommenter si besoin
+# pycolmap>=0.6.0       # Python bindings pour COLMAP
+# trimesh>=4.0.0        # Manipulation de meshes

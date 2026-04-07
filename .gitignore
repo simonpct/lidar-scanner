@@ -1,0 +1,25 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Données (trop volumineux pour git)
+data/raw/
+data/processed/
+data/output/
+*.las
+*.laz
+*.e57
+*.ply
+*.pcd
+*.360
+*.mp4
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

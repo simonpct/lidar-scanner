@@ -1,0 +1,15 @@
+[Unit]
+Description=LiDAR Scanner Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=simon
+WorkingDirectory=/home/simon/lidar-scanner/rpi5
+Environment=SCAN_DATA_DIR=/home/simon/scans
+ExecStart=/bin/bash -c "source /opt/ros/jazzy/setup.bash && /home/simon/lidar-scanner/rpi5/.venv/bin/python /home/simon/lidar-scanner/rpi5/web_dashboard.py --port 8080"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

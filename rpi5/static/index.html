@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>LiDAR Scanner</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e4e4e7;
+    --muted: #71717a;
+    --green: #22c55e;
+    --red: #ef4444;
+    --orange: #f59e0b;
+    --blue: #3b82f6;
+    --accent: #8b5cf6;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', system-ui, sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100dvh; padding: 16px;
+    -webkit-font-smoothing: antialiased;
+  }
+  h1 { font-size: 1.3rem; font-weight: 700; margin-bottom: 16px; display: flex; align-items: center; gap: 8px; }
+  h1 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; }
+
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 16px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 14px;
+  }
+  .card.full { grid-column: 1 / -1; }
+  .card h2 { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 8px; }
+  .card .value { font-size: 1.5rem; font-weight: 700; }
+  .card .sub { font-size: 0.8rem; color: var(--muted); margin-top: 2px; }
+
+  .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 6px; flex-shrink: 0; }
+  .status-dot.ok { background: var(--green); }
+  .status-dot.warn { background: var(--orange); }
+  .status-dot.off { background: var(--red); }
+
+  .net-row { display: flex; align-items: center; margin-bottom: 6px; font-size: 0.9rem; }
+  .net-row:last-child { margin-bottom: 0; }
+  .net-label { color: var(--muted); min-width: 50px; font-size: 0.75rem; font-family: monospace; }
+  .net-info { flex: 1; }
+
+  /* Bar de stockage */
+  .bar-bg { background: var(--border); border-radius: 6px; height: 8px; margin-top: 8px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 6px; transition: width 0.5s; }
+
+  /* Section scan */
+  .scan-section { margin-bottom: 16px; }
+  .scan-form { display: flex; flex-direction: column; gap: 10px; }
+  .input-row { display: flex; gap: 8px; }
+  .input-row input {
+    flex: 1; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px; color: var(--text);
+    font-size: 0.95rem;
+  }
+  .input-row input:focus { outline: none; border-color: var(--accent); }
+  .input-row input::placeholder { color: var(--muted); }
+
+  .btn {
+    padding: 12px 20px; border: none; border-radius: 10px;
+    font-size: 1rem; font-weight: 600; cursor: pointer;
+    transition: transform 0.1s, opacity 0.15s;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn-start { background: var(--green); color: #000; width: 100%; }
+  .btn-stop { background: var(--red); color: #fff; width: 100%; }
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Scan en cours */
+  .scan-active {
+    background: linear-gradient(135deg, #1a2e1a, #1a1d27);
+    border-color: var(--green);
+  }
+  .scan-active .pulse {
+    display: inline-block; width: 10px; height: 10px;
+    background: var(--green); border-radius: 50%;
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+  /* Logs */
+  .log-details { margin-top: 10px; }
+  .log-details summary {
+    font-size: 0.75rem; color: var(--muted); cursor: pointer;
+    padding: 4px 0; user-select: none;
+  }
+  .log-box {
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px; margin-top: 6px;
+    max-height: 150px; overflow-y: auto;
+    font-family: monospace; font-size: 0.75rem; color: var(--muted);
+    line-height: 1.5;
+  }
+
+  /* Sessions list */
+  .sessions { margin-top: 8px; }
+  .session-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 0; border-bottom: 1px solid var(--border);
+    font-size: 0.85rem;
+  }
+  .session-item:last-child { border-bottom: none; }
+  .session-name { font-weight: 600; }
+  .session-meta { color: var(--muted); font-size: 0.75rem; }
+
+  /* Responsive — single col on very small */
+  @media (max-width: 360px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+
+<h1><span class="dot" id="alive-dot"></span> LiDAR Scanner</h1>
+
+<div class="grid">
+  <!-- Stockage -->
+  <div class="card">
+    <h2>Stockage</h2>
+    <div class="value" id="storage-free">--</div>
+    <div class="sub" id="storage-detail">-- / --</div>
+    <div class="bar-bg"><div class="bar-fill" id="storage-bar" style="width:0%; background:var(--green);"></div></div>
+  </div>
+
+  <!-- Batterie -->
+  <div class="card">
+    <h2>Batterie</h2>
+    <div class="value" id="battery-value">--</div>
+    <div class="sub" id="battery-status"></div>
+  </div>
+
+  <!-- Réseau -->
+  <div class="card full">
+    <h2>Réseau</h2>
+    <div class="net-row">
+      <span class="status-dot off" id="lidar-dot"></span>
+      <span class="net-label">lidar</span>
+      <span class="net-info" id="lidar-info">--</span>
+    </div>
+    <div class="net-row">
+      <span class="status-dot off" id="topic-dot"></span>
+      <span class="net-label">points</span>
+      <span class="net-info" id="topic-info">--</span>
+    </div>
+    <div class="net-row">
+      <span class="status-dot off" id="wlan0-dot"></span>
+      <span class="net-label">wlan0</span>
+      <span class="net-info" id="wlan0-info">--</span>
+    </div>
+    <div class="net-row">
+      <span class="status-dot off" id="ap0-dot"></span>
+      <span class="net-label">ap0</span>
+      <span class="net-info" id="ap0-info">--</span>
+    </div>
+  </div>
+</div>
+
+<!-- Scan controls -->
+<div class="card scan-section" id="scan-card">
+  <h2>Scanner</h2>
+  <div id="scan-idle">
+    <div class="scan-form">
+      <div class="input-row">
+        <input type="text" id="scan-name" placeholder="Nom du scan (ex: batiment_01)">
+      </div>
+      <div class="input-row" style="align-items:center;">
+        <input type="number" id="scan-interval" value="2" min="1" max="30" step="0.5"
+               style="max-width: 80px;" title="Intervalle photos (s)">
+        <label style="display:flex; align-items:center; gap:6px; font-size:0.85rem; cursor:pointer; white-space:nowrap;">
+          <input type="checkbox" id="scan-gopro" checked style="width:18px; height:18px; accent-color:var(--accent);"> GoPro
+        </label>
+      </div>
+      <button class="btn btn-start" id="btn-start" onclick="startScan()">Lancer le scan</button>
+    </div>
+  </div>
+  <div id="scan-running" style="display:none;">
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+      <span class="pulse"></span>
+      <span style="font-weight:600;" id="scan-running-name">--</span>
+    </div>
+    <div class="sub" id="scan-running-since">--</div>
+    <div style="display:flex; gap:8px; margin-top:10px;">
+      <button class="btn btn-pause" id="btn-pause" onclick="togglePause()" style="flex:1; background:var(--orange); color:#000;">Pause</button>
+      <button class="btn btn-stop" onclick="stopScan()" style="flex:1;">Arrêter</button>
+    </div>
+    <details class="log-details">
+      <summary>Logs</summary>
+      <div class="log-box" id="scan-logs"></div>
+    </details>
+  </div>
+</div>
+
+<!-- Dernier scan (logs persistants) -->
+<div class="card" id="last-scan-card" style="display:none;">
+  <h2>Dernier scan</h2>
+  <div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+    <span class="status-dot" id="last-scan-dot"></span>
+    <span style="font-weight:600;" id="last-scan-name">--</span>
+    <span class="sub" id="last-scan-status" style="margin-left:auto;"></span>
+  </div>
+  <details class="log-details">
+    <summary>Logs</summary>
+    <div class="log-box" id="last-scan-logs" style="max-height:200px;"></div>
+  </details>
+</div>
+
+<!-- Sessions passées -->
+<div class="card">
+  <h2>Sessions</h2>
+  <div class="sessions" id="sessions-list">
+    <div class="sub">Aucune session</div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.getElementById(s);
+
+async function fetchStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const d = await r.json();
+    updateUI(d);
+    $('alive-dot').style.background = 'var(--green)';
+  } catch {
+    $('alive-dot').style.background = 'var(--red)';
+  }
+}
+
+function updateUI(d) {
+  // Storage
+  const s = d.storage;
+  $('storage-free').textContent = s.free_gb + ' Go';
+  $('storage-detail').textContent = s.used_gb + ' / ' + s.total_gb + ' Go — scans: ' + s.scans_gb + ' Go';
+  $('storage-bar').style.width = s.percent + '%';
+  $('storage-bar').style.background = s.percent > 90 ? 'var(--red)' : s.percent > 75 ? 'var(--orange)' : 'var(--green)';
+
+  // Battery
+  if (d.battery) {
+    $('battery-value').textContent = d.battery.percent + '%';
+    $('battery-status').textContent = d.battery.status || '';
+  } else {
+    $('battery-value').textContent = 'N/A';
+    $('battery-status').textContent = 'Secteur';
+  }
+
+  // Network
+  updateLidar(d.network.lidar_serial);
+  updateTopic(d.network.lidar_topic);
+  updateWlan(d.network.wlan0);
+  updateAp(d.network.ap0);
+
+  // Scan state
+  if (d.scan.running) {
+    $('scan-idle').style.display = 'none';
+    $('scan-running').style.display = 'block';
+    $('scan-running-name').textContent = d.scan.name;
+    $('scan-running-since').textContent = 'Depuis ' + new Date(d.scan.started_at).toLocaleTimeString('fr-FR');
+    $('scan-card').classList.add('scan-active');
+    // Pause button state
+    const pauseBtn = $('btn-pause');
+    if (d.scan.paused) {
+      pauseBtn.textContent = 'Reprendre';
+      pauseBtn.style.background = 'var(--blue)';
+      pauseBtn.style.color = '#fff';
+    } else {
+      pauseBtn.textContent = 'Pause';
+      pauseBtn.style.background = 'var(--orange)';
+      pauseBtn.style.color = '#000';
+    }
+    isPaused = d.scan.paused;
+    fetchLogs();
+  } else {
+    isPaused = false;
+    $('scan-idle').style.display = 'block';
+    $('scan-running').style.display = 'none';
+    $('scan-card').classList.remove('scan-active');
+  }
+
+  // Dernier scan (logs persistants même après arrêt)
+  if (!d.scan.running && d.scan.last_logs && d.scan.last_logs.length > 0) {
+    $('last-scan-card').style.display = 'block';
+    $('last-scan-name').textContent = d.scan.name || '?';
+    const dot = $('last-scan-dot');
+    const statusEl = $('last-scan-status');
+    if (d.scan.exit_code === 0) {
+      dot.className = 'status-dot ok';
+      statusEl.textContent = 'OK';
+    } else if (d.scan.exit_code !== null) {
+      dot.className = 'status-dot off';
+      statusEl.textContent = 'Erreur (code ' + d.scan.exit_code + ')';
+    } else {
+      dot.className = 'status-dot warn';
+      statusEl.textContent = '';
+    }
+    const box = $('last-scan-logs');
+    box.textContent = d.scan.last_logs.join('\n');
+  } else if (d.scan.running) {
+    $('last-scan-card').style.display = 'none';
+  }
+
+  // Sessions
+  const list = $('sessions-list');
+  if (d.sessions.length === 0) {
+    list.innerHTML = '<div class="sub">Aucune session</div>';
+  } else {
+    list.innerHTML = d.sessions.map(s => {
+      const dur = s.duration ? Math.round(s.duration) + 's' : '';
+      const photos = s.photos !== undefined ? s.photos + ' photos' : '';
+      const meta = [dur, photos, s.size_mb + ' Mo'].filter(Boolean).join(' · ');
+      return `<div class="session-item"><span class="session-name">${s.name}</span><span class="session-meta">${meta}</span></div>`;
+    }).join('');
+  }
+}
+
+function updateNet(id, info) {
+  const dot = $(id + '-dot');
+  const el = $(id + '-info');
+  if (!info.exists) { dot.className = 'status-dot off'; el.textContent = 'absent'; return; }
+  dot.className = info.up ? 'status-dot ok' : 'status-dot off';
+  el.textContent = info.up ? (info.ip || 'pas d\'IP') : 'déconnecté';
+}
+
+function updateLidar(reachable) {
+  $('lidar-dot').className = reachable ? 'status-dot ok' : 'status-dot off';
+  $('lidar-info').textContent = reachable ? 'Unitree L2 connecté' : 'non joignable';
+}
+
+function updateTopic(info) {
+  const dot = $('topic-dot');
+  const el = $('topic-info');
+  if (!info || info.error) { dot.className = 'status-dot off'; el.textContent = 'ROS2 indisponible'; return; }
+  dot.className = info.active ? 'status-dot ok' : 'status-dot off';
+  el.textContent = info.active ? info.hz + ' Hz' : 'pas de données';
+}
+
+function updateWlan(info) {
+  const dot = $('wlan0-dot');
+  const el = $('wlan0-info');
+  if (!info.exists) { dot.className = 'status-dot off'; el.textContent = 'absent'; return; }
+  dot.className = info.up ? 'status-dot ok' : 'status-dot off';
+  if (info.up && info.ssid) {
+    el.textContent = info.ssid + ' (' + (info.ip || '...') + ')';
+  } else if (info.up) {
+    el.textContent = info.ip || 'connecté';
+  } else {
+    el.textContent = 'déconnecté';
+  }
+}
+
+function updateAp(info) {
+  const dot = $('ap0-dot');
+  const el = $('ap0-info');
+  if (!info.exists) { dot.className = 'status-dot off'; el.textContent = 'non configuré'; return; }
+  dot.className = info.up ? 'status-dot ok' : 'status-dot off';
+  el.textContent = info.up ? 'LidarScanner (' + (info.ip || '192.168.4.1') + ')' : 'inactif';
+}
+
+async function startScan() {
+  const name = $('scan-name').value.trim() || undefined;
+  const interval = parseFloat($('scan-interval').value) || 2;
+  const gopro = $('scan-gopro').checked;
+  $('btn-start').disabled = true;
+  try {
+    const r = await fetch('/api/scan/start', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ name, interval, gopro })
+    });
+    const d = await r.json();
+    if (d.error) alert(d.error);
+  } catch (e) {
+    alert('Erreur: ' + e.message);
+  }
+  $('btn-start').disabled = false;
+  fetchStatus();
+}
+
+let isPaused = false;
+async function togglePause() {
+  const endpoint = isPaused ? '/api/scan/resume' : '/api/scan/pause';
+  try {
+    const r = await fetch(endpoint, { method: 'POST' });
+    const d = await r.json();
+    if (d.error) alert(d.error);
+    else isPaused = !isPaused;
+  } catch (e) {
+    alert('Erreur: ' + e.message);
+  }
+  fetchStatus();
+}
+
+async function stopScan() {
+  try {
+    await fetch('/api/scan/stop', { method: 'POST' });
+  } catch (e) {
+    alert('Erreur: ' + e.message);
+  }
+  setTimeout(fetchStatus, 1000);
+}
+
+async function fetchLogs() {
+  try {
+    const r = await fetch('/api/scan/logs');
+    const d = await r.json();
+    const box = $('scan-logs');
+    box.textContent = d.lines.join('\n');
+    box.scrollTop = box.scrollHeight;
+  } catch {}
+}
+
+// Polling
+fetchStatus();
+setInterval(fetchStatus, 2000);
+</script>
+</body>
+</html>
