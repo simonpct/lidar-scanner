@@ -7,7 +7,7 @@ Type=simple
 User=simon
 WorkingDirectory=/home/simon/lidar-scanner/rpi5
 Environment=SCAN_DATA_DIR=/home/simon/scans
-ExecStart=/bin/bash -c "source /opt/ros/jazzy/setup.bash && /home/simon/lidar-scanner/rpi5/.venv/bin/python /home/simon/lidar-scanner/rpi5/web_dashboard.py --port 8080"
+ExecStart=/bin/bash -c "source /opt/ros/jazzy/setup.bash && source /home/simon/unilidar_sdk2/unitree_lidar_ros2/install/setup.bash 2>/dev/null; /home/simon/lidar-scanner/rpi5/.venv/bin/python /home/simon/lidar-scanner/rpi5/web_dashboard.py --port 8080"
 Restart=always
 RestartSec=5
 

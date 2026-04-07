@@ -23,35 +23,42 @@ Téléphone  ◀──wifi─▶│ ap0   (hotspot)  │  WiFi → monitoring in
 
 ## Installation
 
-### OS
+### Installation automatique (recommandé)
 ```bash
 # Flasher Ubuntu 24.04 Server (ARM64) sur SSD NVMe (via HAT)
-# Les cartes SD sont trop lentes pour les rosbags volumineux
+# Puis lancer le script d'installation :
+git clone https://github.com/simonpct/lidar-scanner.git ~/lidar-scanner
+bash ~/lidar-scanner/rpi5/install.sh
 ```
 
-### ROS2
+Le script installe tout : ROS2 Jazzy, SDK Unitree, driver ROS2, dashboard web, services systemd.
+
+### Installation manuelle
+
+<details>
+<summary>Détails</summary>
+
+#### ROS2
 ```bash
 sudo apt install ros-jazzy-desktop
 echo "source /opt/ros/jazzy/setup.bash" >> ~/.bashrc
 ```
 
-### SDK Unitree L2
+#### SDK Unitree L2
 ```bash
 git clone https://github.com/unitreerobotics/unilidar_sdk2.git
-cd unilidar_sdk2 && mkdir build && cd build
-cmake .. && make -j4
-
-# Driver ROS2
-cd ~
-git clone https://github.com/unitreerobotics/unitree_lidar_ros2.git
-cd unitree_lidar_ros2
+cd ~/unilidar_sdk2/unitree_lidar_ros2
+source /opt/ros/jazzy/setup.bash
 colcon build
+echo "source ~/unilidar_sdk2/unitree_lidar_ros2/install/setup.bash" >> ~/.bashrc
 ```
 
-### Python (contrôle GoPro)
+#### Python (contrôle GoPro)
 ```bash
 pip install goprocam requests
 ```
+
+</details>
 
 ## Réseau
 
@@ -142,7 +149,7 @@ python scripts/capture/gopro_control.py --mode status
 
 ### Rosbag seul
 ```bash
-ros2 bag record /unitree_lidar/cloud /unitree_lidar/imu \
+ros2 bag record /unilidar/cloud /unilidar/imu \
     -o ~/scans/scan_$(date +%Y%m%d_%H%M%S)
 ```
 

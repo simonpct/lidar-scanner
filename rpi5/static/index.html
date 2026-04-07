@@ -73,6 +73,14 @@
   .btn-stop { background: var(--red); color: #fff; width: 100%; }
   .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
+  /* Boutons LiDAR */
+  .btn-lidar {
+    padding: 8px 14px; border-radius: 8px; font-size: 0.85rem;
+    background: var(--green); color: #000;
+  }
+  .btn-lidar-warn { background: var(--red); color: #fff; }
+  .btn-lidar-muted { background: var(--border); color: var(--text); }
+
   /* Scan en cours */
   .scan-active {
     background: linear-gradient(135deg, #1a2e1a, #1a1d27);
@@ -107,8 +115,19 @@
     font-size: 0.85rem;
   }
   .session-item:last-child { border-bottom: none; }
-  .session-name { font-weight: 600; }
-  .session-meta { color: var(--muted); font-size: 0.75rem; }
+  .session-name { font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .session-meta { color: var(--muted); font-size: 0.75rem; text-align: right; }
+  .btn-del {
+    width: 20px; height: 20px; border-radius: 4px; border: none;
+    background: var(--red); color: #fff; font-size: 0.75rem;
+    cursor: pointer; line-height: 1; padding: 0; flex-shrink: 0;
+  }
+  .btn-view {
+    padding: 2px 8px; border-radius: 4px; border: none;
+    background: var(--border); color: var(--muted); font-size: 0.7rem;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .btn-view:active { background: var(--accent); color: #fff; }
 
   /* Responsive — single col on very small */
   @media (max-width: 360px) { .grid { grid-template-columns: 1fr; } }
@@ -127,16 +146,21 @@
     <div class="bar-bg"><div class="bar-fill" id="storage-bar" style="width:0%; background:var(--green);"></div></div>
   </div>
 
-  <!-- Batterie -->
+  <!-- Température + Batterie -->
   <div class="card">
-    <h2>Batterie</h2>
-    <div class="value" id="battery-value">--</div>
-    <div class="sub" id="battery-status"></div>
+    <h2>CPU</h2>
+    <div class="value" id="cpu-temp">--</div>
+    <div class="sub" id="battery-info"></div>
   </div>
 
   <!-- Réseau -->
   <div class="card full">
     <h2>Réseau</h2>
+    <div class="net-row">
+      <span class="status-dot off" id="eth0-dot"></span>
+      <span class="net-label">eth0</span>
+      <span class="net-info" id="eth0-info">--</span>
+    </div>
     <div class="net-row">
       <span class="status-dot off" id="lidar-dot"></span>
       <span class="net-label">lidar</span>
@@ -148,6 +172,11 @@
       <span class="net-info" id="topic-info">--</span>
     </div>
     <div class="net-row">
+      <span class="status-dot off" id="slam-dot"></span>
+      <span class="net-label">SLAM</span>
+      <span class="net-info" id="slam-info">--</span>
+    </div>
+    <div class="net-row">
       <span class="status-dot off" id="wlan0-dot"></span>
       <span class="net-label">wlan0</span>
       <span class="net-info" id="wlan0-info">--</span>
@@ -157,6 +186,18 @@
       <span class="net-label">ap0</span>
       <span class="net-info" id="ap0-info">--</span>
     </div>
+  </div>
+
+  <!-- Contrôle LiDAR direct -->
+  <div class="card full" id="lidar-controls">
+    <h2>Contrôle LiDAR</h2>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="btn btn-lidar" onclick="lidarCmd('start')">Démarrer</button>
+      <button class="btn btn-lidar btn-lidar-warn" onclick="lidarCmd('stop')">Arrêter</button>
+      <button class="btn btn-lidar btn-lidar-muted" onclick="lidarCmd('reset')">Reset</button>
+      <button class="btn btn-lidar btn-lidar-muted" onclick="lidarCmd('sync')">Sync horloge</button>
+    </div>
+    <div class="sub" id="lidar-cmd-status" style="margin-top:8px;"></div>
   </div>
 </div>
 
@@ -173,6 +214,9 @@
                style="max-width: 80px;" title="Intervalle photos (s)">
         <label style="display:flex; align-items:center; gap:6px; font-size:0.85rem; cursor:pointer; white-space:nowrap;">
           <input type="checkbox" id="scan-gopro" checked style="width:18px; height:18px; accent-color:var(--accent);"> GoPro
+        </label>
+        <label style="display:flex; align-items:center; gap:6px; font-size:0.85rem; cursor:pointer; white-space:nowrap;">
+          <input type="checkbox" id="scan-slam" checked style="width:18px; height:18px; accent-color:var(--green);"> SLAM
         </label>
       </div>
       <button class="btn btn-start" id="btn-start" onclick="startScan()">Lancer le scan</button>
@@ -195,6 +239,17 @@
   </div>
 </div>
 
+<!-- Snapshot point cloud -->
+<div class="card" id="snapshot-card">
+  <h2>Vue LiDAR</h2>
+  <div id="snapshot-container" style="text-align:center;">
+    <img id="snapshot-img" style="display:none; width:100%; border-radius:8px; border:1px solid var(--border);">
+    <div class="sub" id="snapshot-placeholder">Appuyer pour capturer une vue</div>
+  </div>
+  <button class="btn btn-lidar-muted" onclick="takeSnapshot()" id="btn-snapshot" style="width:100%; margin-top:10px;">Snapshot</button>
+  <div class="sub" id="snapshot-status" style="margin-top:6px;"></div>
+</div>
+
 <!-- Dernier scan (logs persistants) -->
 <div class="card" id="last-scan-card" style="display:none;">
   <h2>Dernier scan</h2>
@@ -212,6 +267,10 @@
 <!-- Sessions passées -->
 <div class="card">
   <h2>Sessions</h2>
+  <div id="session-preview" style="display:none; margin-bottom:10px; text-align:center;">
+    <img id="session-preview-img" style="width:100%; border-radius:8px; border:1px solid var(--border);">
+    <div class="sub" id="session-preview-name" style="margin-top:4px;"></div>
+  </div>
   <div class="sessions" id="sessions-list">
     <div class="sub">Aucune session</div>
   </div>
@@ -239,18 +298,24 @@ function updateUI(d) {
   $('storage-bar').style.width = s.percent + '%';
   $('storage-bar').style.background = s.percent > 90 ? 'var(--red)' : s.percent > 75 ? 'var(--orange)' : 'var(--green)';
 
+  // CPU temp
+  $('cpu-temp').textContent = d.cpu_temp !== null ? d.cpu_temp + '°C' : '--';
+  if (d.cpu_temp > 75) $('cpu-temp').style.color = 'var(--red)';
+  else if (d.cpu_temp > 60) $('cpu-temp').style.color = 'var(--orange)';
+  else $('cpu-temp').style.color = 'var(--text)';
+
   // Battery
   if (d.battery) {
-    $('battery-value').textContent = d.battery.percent + '%';
-    $('battery-status').textContent = d.battery.status || '';
+    $('battery-info').textContent = 'Batterie: ' + d.battery.percent + '% — ' + (d.battery.status || '');
   } else {
-    $('battery-value').textContent = 'N/A';
-    $('battery-status').textContent = 'Secteur';
+    $('battery-info').textContent = 'Secteur';
   }
 
   // Network
-  updateLidar(d.network.lidar_serial);
+  updateNet('eth0', d.network.eth0);
+  updateLidar(d.network.lidar_connected);
   updateTopic(d.network.lidar_topic);
+  updateSlam(d.network.slam_topic);
   updateWlan(d.network.wlan0);
   updateAp(d.network.ap0);
 
@@ -273,12 +338,14 @@ function updateUI(d) {
       pauseBtn.style.color = '#000';
     }
     isPaused = d.scan.paused;
+    $('lidar-controls').style.display = 'none';
     fetchLogs();
   } else {
     isPaused = false;
     $('scan-idle').style.display = 'block';
     $('scan-running').style.display = 'none';
     $('scan-card').classList.remove('scan-active');
+    $('lidar-controls').style.display = 'block';
   }
 
   // Dernier scan (logs persistants même après arrêt)
@@ -311,8 +378,11 @@ function updateUI(d) {
     list.innerHTML = d.sessions.map(s => {
       const dur = s.duration ? Math.round(s.duration) + 's' : '';
       const photos = s.photos !== undefined ? s.photos + ' photos' : '';
-      const meta = [dur, photos, s.size_mb + ' Mo'].filter(Boolean).join(' · ');
-      return `<div class="session-item"><span class="session-name">${s.name}</span><span class="session-meta">${meta}</span></div>`;
+      const lidar = s.lidar_mb ? s.lidar_mb + ' Mo LiDAR' : 'pas de données LiDAR';
+      const meta = [dur, photos, lidar, s.size_mb + ' Mo total'].filter(Boolean).join(' · ');
+      const del = s.empty ? `<button class="btn-del" onclick="deleteSession('${s.name}')">×</button>` : '';
+      const view = s.lidar_mb > 0 ? `<button class="btn-view" onclick="viewSession('${s.name}')">vue</button>` : '';
+      return `<div class="session-item"><span class="session-name">${s.name} ${view} ${del}</span><span class="session-meta">${meta}</span></div>`;
     }).join('');
   }
 }
@@ -327,7 +397,7 @@ function updateNet(id, info) {
 
 function updateLidar(reachable) {
   $('lidar-dot').className = reachable ? 'status-dot ok' : 'status-dot off';
-  $('lidar-info').textContent = reachable ? 'Unitree L2 connecté' : 'non joignable';
+  $('lidar-info').textContent = reachable ? 'Unitree L2 (câble OK)' : 'câble non détecté';
 }
 
 function updateTopic(info) {
@@ -335,7 +405,15 @@ function updateTopic(info) {
   const el = $('topic-info');
   if (!info || info.error) { dot.className = 'status-dot off'; el.textContent = 'ROS2 indisponible'; return; }
   dot.className = info.active ? 'status-dot ok' : 'status-dot off';
-  el.textContent = info.active ? info.hz + ' Hz' : 'pas de données';
+  el.textContent = info.active ? 'driver actif (' + info.publishers + ' pub)' : 'driver inactif';
+}
+
+function updateSlam(info) {
+  const dot = $('slam-dot');
+  const el = $('slam-info');
+  if (!info) { dot.className = 'status-dot off'; el.textContent = 'non disponible'; return; }
+  dot.className = info.active ? 'status-dot ok' : 'status-dot off';
+  el.textContent = info.active ? 'FAST-LIO2 actif' : 'inactif';
 }
 
 function updateWlan(info) {
@@ -360,16 +438,88 @@ function updateAp(info) {
   el.textContent = info.up ? 'LidarScanner (' + (info.ip || '192.168.4.1') + ')' : 'inactif';
 }
 
+async function takeSnapshot() {
+  const btn = $('btn-snapshot');
+  const status = $('snapshot-status');
+  btn.disabled = true;
+  status.textContent = 'Capture en cours...';
+  try {
+    const r = await fetch('/api/snapshot');
+    if (r.headers.get('content-type')?.includes('image/png')) {
+      const blob = await r.blob();
+      const url = URL.createObjectURL(blob);
+      const img = $('snapshot-img');
+      img.src = url;
+      img.style.display = 'block';
+      $('snapshot-placeholder').style.display = 'none';
+      status.textContent = new Date().toLocaleTimeString('fr-FR');
+    } else {
+      const d = await r.json();
+      status.textContent = d.error || 'Erreur';
+    }
+  } catch (e) {
+    status.textContent = 'Erreur: ' + e.message;
+  }
+  btn.disabled = false;
+}
+
+async function viewSession(name) {
+  const preview = $('session-preview');
+  const img = $('session-preview-img');
+  const label = $('session-preview-name');
+  label.textContent = name + ' — chargement...';
+  preview.style.display = 'block';
+  try {
+    const r = await fetch('/api/sessions/' + name + '/snapshot');
+    if (r.headers.get('content-type')?.includes('image/png')) {
+      const blob = await r.blob();
+      img.src = URL.createObjectURL(blob);
+      label.textContent = name;
+    } else {
+      const d = await r.json();
+      label.textContent = name + ' — ' + (d.error || 'erreur');
+      preview.style.display = 'none';
+    }
+  } catch (e) {
+    label.textContent = 'Erreur: ' + e.message;
+  }
+}
+
+async function deleteSession(name) {
+  if (!confirm('Supprimer la session "' + name + '" ?')) return;
+  try {
+    await fetch('/api/sessions/' + name, { method: 'DELETE' });
+  } catch (e) {
+    alert('Erreur: ' + e.message);
+  }
+  fetchStatus();
+}
+
+async function lidarCmd(cmd) {
+  const statusEl = $('lidar-cmd-status');
+  statusEl.textContent = cmd + '...';
+  try {
+    const r = await fetch('/api/lidar/' + cmd, { method: 'POST' });
+    const d = await r.json();
+    statusEl.textContent = d.ok ? d.message : ('Erreur: ' + d.message);
+    setTimeout(() => { statusEl.textContent = ''; }, 4000);
+  } catch (e) {
+    statusEl.textContent = 'Erreur: ' + e.message;
+  }
+  fetchStatus();
+}
+
 async function startScan() {
   const name = $('scan-name').value.trim() || undefined;
   const interval = parseFloat($('scan-interval').value) || 2;
   const gopro = $('scan-gopro').checked;
+  const slam = $('scan-slam').checked;
   $('btn-start').disabled = true;
   try {
     const r = await fetch('/api/scan/start', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ name, interval, gopro })
+      body: JSON.stringify({ name, interval, gopro, slam })
     });
     const d = await r.json();
     if (d.error) alert(d.error);

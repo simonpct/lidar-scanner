@@ -83,9 +83,13 @@ class ScanSession:
 
     def stop_rosbag(self):
         """Arrête proprement l'enregistrement rosbag."""
-        if self.rosbag_process:
+        if self.rosbag_process and self.rosbag_process.poll() is None:
             self.rosbag_process.send_signal(signal.SIGINT)
-            self.rosbag_process.wait(timeout=10)
+            try:
+                self.rosbag_process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.rosbag_process.kill()
+                self.rosbag_process.wait()
             print("rosbag arrêté")
 
     def capture_loop(self):
@@ -211,8 +215,11 @@ def main():
     parser.add_argument(
         "--topics",
         nargs="+",
-        default=["/unitree_lidar/cloud", "/unitree_lidar/imu"],
-        help="Topics ROS2 à enregistrer",
+        default=[
+            "/unilidar/cloud", "/unilidar/imu",
+            "/cloud_registered", "/odometry", "/path",
+        ],
+        help="Topics ROS2 à enregistrer (LiDAR + SLAM)",
     )
     parser.add_argument(
         "--no-gopro",
