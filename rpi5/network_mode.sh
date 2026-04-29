@@ -40,6 +40,33 @@ ensure_ap_connection() {
     fi
 }
 
+# brcmfmac (Pi 5) ne supporte pas STA+AP sur des bandes différentes.
+# Si une STA est active, on aligne l'AP sur sa bande/canal pour le mode dual.
+# Sinon (mode hotspot pur), on remet l'AP en 2.4 GHz canal 6.
+align_ap_channel_to_sta() {
+    local sta_freq sta_channel sta_band
+    if command -v iw &>/dev/null; then
+        sta_freq=$(iw dev "$AP_IFACE" info 2>/dev/null | awk '/channel/ {gsub(/\(/,""); print $4}' | head -1)
+        sta_channel=$(iw dev "$AP_IFACE" info 2>/dev/null | awk '/channel/ {print $2}' | head -1)
+    fi
+
+    if [ -n "${sta_channel:-}" ] && [ -n "${sta_freq:-}" ]; then
+        if [ "$sta_freq" -ge 5000 ]; then
+            sta_band="a"
+        else
+            sta_band="bg"
+        fi
+        nmcli con modify "$AP_CON" \
+            802-11-wireless.band "$sta_band" \
+            802-11-wireless.channel "$sta_channel" 2>/dev/null || true
+    else
+        # Pas de STA active → AP en 2.4 GHz canal 6 (compatible majorité des téléphones)
+        nmcli con modify "$AP_CON" \
+            802-11-wireless.band bg \
+            802-11-wireless.channel 6 2>/dev/null || true
+    fi
+}
+
 active_sta_connection() {
     # Renvoie le nom de la connexion STA active (WiFi en mode infrastructure), s'il y en a
     nmcli -t -f NAME,TYPE,DEVICE con show --active 2>/dev/null \
@@ -73,6 +100,8 @@ mode_hotspot() {
         nmcli con down "$name" 2>/dev/null || true
         nmcli con modify "$name" connection.autoconnect no 2>/dev/null || true
     done < <(nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless" {print $1}' | grep -vx "$AP_CON" || true)
+    sleep 1
+    align_ap_channel_to_sta   # pas de STA → 2.4 GHz canal 6
     nmcli con up "$AP_CON"
 }
 
@@ -89,7 +118,11 @@ mode_dual() {
         for name in $(nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless" {print $1}' | grep -vx "$AP_CON"); do
             nmcli con up "$name" 2>/dev/null && break || true
         done
+        sleep 3   # laisser le temps à la STA de s'associer
     fi
+    # Aligner l'AP sur le canal de la STA (contrainte brcmfmac)
+    align_ap_channel_to_sta
+    nmcli con down "$AP_CON" 2>/dev/null || true
     nmcli con up "$AP_CON"
 }
 

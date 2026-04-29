@@ -47,7 +47,8 @@ step "Installation des paquets système"
 sudo apt install -y \
     build-essential cmake git curl wget \
     python3 python3-venv python3-pip \
-    net-tools wireless-tools \
+    net-tools wireless-tools iw \
+    network-manager \
     software-properties-common
 
 # Check
