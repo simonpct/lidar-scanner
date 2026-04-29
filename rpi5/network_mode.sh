@@ -36,7 +36,11 @@ ensure_ap_connection() {
             ipv4.method shared \
             ipv4.addresses "$AP_IP" \
             wifi-sec.key-mgmt wpa-psk \
-            wifi-sec.psk "$AP_PSK"
+            wifi-sec.psk "$AP_PSK" \
+            wifi-sec.proto rsn \
+            wifi-sec.pairwise ccmp \
+            wifi-sec.group ccmp \
+            wifi-sec.pmf disable
     fi
 }
 
@@ -44,13 +48,22 @@ ensure_ap_connection() {
 # Si une STA est active, on aligne l'AP sur sa bande/canal pour le mode dual.
 # Sinon (mode hotspot pur), on remet l'AP en 2.4 GHz canal 6.
 align_ap_channel_to_sta() {
-    local sta_freq sta_channel sta_band
+    local sta_info sta_freq sta_channel sta_band
+    sta_freq=""
+    sta_channel=""
+
     if command -v iw &>/dev/null; then
-        sta_freq=$(iw dev "$AP_IFACE" info 2>/dev/null | awk '/channel/ {gsub(/\(/,""); print $4}' | head -1)
-        sta_channel=$(iw dev "$AP_IFACE" info 2>/dev/null | awk '/channel/ {print $2}' | head -1)
+        # Format: "channel 104 (5520 MHz), width: 80 MHz, center1: 5530 MHz"
+        # ou "channel 6 (2437 MHz), width: 20 MHz"
+        sta_info=$(iw dev "$AP_IFACE" info 2>/dev/null | grep -E '^\s*channel ')
+        if [ -n "$sta_info" ]; then
+            sta_channel=$(echo "$sta_info" | sed -nE 's/^[[:space:]]*channel[[:space:]]+([0-9]+).*/\1/p')
+            sta_freq=$(echo "$sta_info" | sed -nE 's/.*\(([0-9]+)[[:space:]]*MHz.*/\1/p')
+        fi
     fi
 
-    if [ -n "${sta_channel:-}" ] && [ -n "${sta_freq:-}" ]; then
+    # Vérifier que les valeurs sont bien numériques avant comparaison
+    if [[ "$sta_channel" =~ ^[0-9]+$ ]] && [[ "$sta_freq" =~ ^[0-9]+$ ]]; then
         if [ "$sta_freq" -ge 5000 ]; then
             sta_band="a"
         else
