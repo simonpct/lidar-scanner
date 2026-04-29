@@ -9,9 +9,10 @@
     preprocess:
       lidar_type: 2
       scan_line: 18
-      scan_rate: 10
-      timestamp_unit: 0
-      blind: 0.5
+      scan_rate: 12              # L2 publie à 12Hz
+      timestamp_unit: 1          # 0=sec, 1=ms — driver patché pour fournir du relatif en ms
+      blind: 0.1
+      point_filter_num: 3
 
     mapping:
       acc_cov: 0.1

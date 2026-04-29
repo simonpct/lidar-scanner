@@ -652,25 +652,128 @@ async def lidar_control(command: str):
     return {"ok": ok, "message": msg}
 
 
+# --- WiFi mode (client / hotspot / dual) -------------------------------------
+
+NETWORK_MODE_SCRIPT = "/usr/local/bin/network_mode.sh"
+
+
+async def _run_network_mode(action: str):
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "sudo", NETWORK_MODE_SCRIPT, action,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            return None, stderr.decode().strip() or f"exit {proc.returncode}"
+        try:
+            return json.loads(stdout.decode()), None
+        except json.JSONDecodeError as e:
+            return None, f"parse error: {e}"
+    except asyncio.TimeoutError:
+        return None, "timeout"
+    except Exception as e:
+        return None, str(e)
+
+
+@app.get("/api/network/status")
+async def network_status():
+    """État WiFi actuel : mode, SSID STA, AP actif, clients connectés."""
+    data, err = await _run_network_mode("status")
+    if err:
+        return {"ok": False, "error": err}
+    return {"ok": True, **data}
+
+
+@app.post("/api/network/mode/{mode}")
+async def network_set_mode(mode: str):
+    """Bascule le mode WiFi : client, hotspot, ou dual."""
+    if mode not in ("client", "hotspot", "dual"):
+        return {"ok": False, "error": f"Mode inconnu : {mode}"}
+    data, err = await _run_network_mode(mode)
+    if err:
+        return {"ok": False, "error": err}
+    return {"ok": True, **data}
+
+
+@app.get("/api/scan/preflight")
+async def scan_preflight():
+    """Vérifie les pré-requis avant de lancer un scan."""
+    checks = {}
+
+    # Ethernet / LiDAR connecté
+    eth0 = await _iface_status("eth0")
+    checks["eth0"] = eth0["up"] and eth0["ip"] is not None
+
+    # Driver ROS2 actif
+    topic = await _check_ros2_topic("/unilidar/cloud")
+    checks["driver"] = topic.get("active", False)
+
+    # Espace disque (au moins 1 Go libre)
+    usage = shutil.disk_usage("/")
+    checks["disk"] = usage.free > 1e9
+    checks["disk_free_gb"] = round(usage.free / 1e9, 1)
+
+    # Pas de scan en cours
+    checks["no_scan_running"] = not scan_state["running"]
+
+    checks["ready"] = all([
+        checks["eth0"],
+        checks["driver"],
+        checks["disk"],
+        checks["no_scan_running"],
+    ])
+
+    return checks
+
+
 @app.post("/api/scan/start")
 async def start_scan(request: Request):
     if scan_state["running"]:
         return {"error": "Un scan est déjà en cours", "name": scan_state["name"]}
 
-    # Réveiller le LiDAR
-    ok, msg = await _set_lidar_mode("start")
-    if not ok:
-        scan_state["log_lines"].append(f"[WARN] lidar_mode start: {msg}")
+    # Pré-checks
+    preflight = await scan_preflight()
+    if not preflight["ready"]:
+        errors = []
+        if not preflight["eth0"]:
+            errors.append("LiDAR non connecté (eth0)")
+        if not preflight["driver"]:
+            errors.append("Driver ROS2 inactif (pas de topic /unilidar/cloud)")
+        if not preflight["disk"]:
+            errors.append(f"Espace disque insuffisant ({preflight['disk_free_gb']} Go libre)")
+        return {"error": " | ".join(errors)}
 
     body = await request.json()
-
-    # Démarrer le SLAM si demandé
-    if body.get("slam", True):
-        await _systemctl("start", "lidar-slam")
     name = body.get("name", f"scan_{datetime.now():%Y%m%d_%H%M%S}")
     interval = body.get("interval", 2.0)
     gopro = body.get("gopro", True)
+    slam = body.get("slam", True)
     data_dir = str(SCAN_DATA_DIR)
+
+    # Initialiser les logs dès maintenant
+    scan_state["log_lines"] = []
+    scan_state["name"] = name
+
+    def log(msg):
+        scan_state["log_lines"].append(f"[{datetime.now():%H:%M:%S}] {msg}")
+
+    # Étape 1 : Démarrer le SLAM si demandé
+    if slam:
+        log("Démarrage SLAM (FAST-LIO2)...")
+        slam_ok = await _systemctl("start", "lidar-slam")
+        if slam_ok:
+            log("SLAM démarré")
+        else:
+            log("SLAM: échec démarrage (scan continue sans SLAM)")
+
+    # Étape 3 : Lancer le scan
+    log(f"Lancement du scan '{name}'...")
+    if gopro:
+        log("Mode: LiDAR + GoPro")
+    else:
+        log("Mode: LiDAR uniquement")
 
     cmd = [
         "python3", str(SCAN_SCRIPT),
@@ -692,11 +795,9 @@ async def start_scan(request: Request):
 
     scan_state["running"] = True
     scan_state["process"] = proc
-    scan_state["name"] = name
     scan_state["started_at"] = datetime.now().isoformat()
     scan_state["exit_code"] = None
     scan_state["stopped_at"] = None
-    scan_state["log_lines"] = []
 
     asyncio.get_event_loop().run_in_executor(None, _read_scan_output, proc)
 
@@ -732,7 +833,7 @@ async def pause_scan():
 
     os.killpg(os.getpgid(scan_state["process"].pid), signal.SIGTSTP)
     scan_state["paused"] = True
-    scan_state["log_lines"].append("[PAUSE]")
+    scan_state["log_lines"].append(f"[{datetime.now():%H:%M:%S}] Scan en pause")
     return {"status": "paused", "name": scan_state["name"]}
 
 
@@ -745,7 +846,7 @@ async def resume_scan():
 
     os.killpg(os.getpgid(scan_state["process"].pid), signal.SIGCONT)
     scan_state["paused"] = False
-    scan_state["log_lines"].append("[REPRISE]")
+    scan_state["log_lines"].append(f"[{datetime.now():%H:%M:%S}] Scan repris")
     return {"status": "resumed", "name": scan_state["name"]}
 
 
@@ -754,22 +855,30 @@ async def stop_scan():
     if not scan_state["running"] or not scan_state["process"]:
         return {"error": "Aucun scan en cours"}
 
+    def log(msg):
+        scan_state["log_lines"].append(f"[{datetime.now():%H:%M:%S}] {msg}")
+
+    log("Arrêt du scan...")
+
     proc = scan_state["process"]
     if scan_state["paused"]:
         os.killpg(os.getpgid(proc.pid), signal.SIGCONT)
         scan_state["paused"] = False
+
     os.killpg(os.getpgid(proc.pid), signal.SIGINT)
     try:
         proc.wait(timeout=15)
+        log("Enregistrement rosbag arrêté")
     except subprocess.TimeoutExpired:
         os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        log("Enregistrement forcé (SIGKILL)")
 
-    ok, msg = await _set_lidar_mode("stop")
-    if not ok:
-        scan_state["log_lines"].append(f"[WARN] lidar_mode stop: {msg}")
+    # Note: on ne stoppe PAS la rotation LiDAR — ça couperait la connexion UDP
+    # du driver ROS2. Le LiDAR continue de tourner, le driver reste actif.
 
-    # Arrêter le SLAM
+    log("Arrêt SLAM...")
     await _systemctl("stop", "lidar-slam")
+    log("Scan terminé")
 
     return {"status": "stopped", "name": scan_state["name"]}
 
@@ -777,6 +886,84 @@ async def stop_scan():
 @app.get("/api/scan/logs")
 async def scan_logs():
     return {"lines": scan_state["log_lines"][-50:]}
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics endpoint
+# ---------------------------------------------------------------------------
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Expose les métriques au format Prometheus."""
+    lines = []
+
+    # CPU temp
+    cpu_temp = _get_cpu_temp()
+    if cpu_temp is not None:
+        lines.append(f"lidar_cpu_temp_celsius {cpu_temp}")
+
+    # Storage
+    usage = shutil.disk_usage("/")
+    lines.append(f"lidar_disk_total_bytes {usage.total}")
+    lines.append(f"lidar_disk_used_bytes {usage.used}")
+    lines.append(f"lidar_disk_free_bytes {usage.free}")
+    scans_size = _dir_size(SCAN_DATA_DIR) if SCAN_DATA_DIR.exists() else 0
+    lines.append(f"lidar_scans_bytes {scans_size}")
+
+    # CPU / Memory (from /proc)
+    try:
+        with open("/proc/loadavg") as f:
+            load1, load5, load15 = f.read().split()[:3]
+            lines.append(f"lidar_load_1m {load1}")
+            lines.append(f"lidar_load_5m {load5}")
+            lines.append(f"lidar_load_15m {load15}")
+    except Exception:
+        pass
+
+    try:
+        with open("/proc/meminfo") as f:
+            meminfo = {}
+            for line in f:
+                parts = line.split(":")
+                if len(parts) == 2:
+                    key = parts[0].strip()
+                    val = parts[1].strip().split()[0]
+                    meminfo[key] = int(val) * 1024  # kB -> bytes
+            if "MemTotal" in meminfo:
+                lines.append(f"lidar_memory_total_bytes {meminfo['MemTotal']}")
+            if "MemAvailable" in meminfo:
+                lines.append(f"lidar_memory_available_bytes {meminfo['MemAvailable']}")
+                lines.append(f"lidar_memory_used_bytes {meminfo['MemTotal'] - meminfo['MemAvailable']}")
+    except Exception:
+        pass
+
+    # Scan state
+    lines.append(f'lidar_scan_running {1 if scan_state["running"] else 0}')
+    lines.append(f'lidar_scan_paused {1 if scan_state["paused"] else 0}')
+
+    # Current scan rosbag size
+    if scan_state["running"] and scan_state["name"]:
+        bag_dir = SCAN_DATA_DIR / scan_state["name"] / "lidar"
+        bag_size = _dir_size(bag_dir) if bag_dir.exists() else 0
+        lines.append(f"lidar_scan_rosbag_bytes {bag_size}")
+        elapsed = (datetime.now() - datetime.fromisoformat(scan_state["started_at"])).total_seconds()
+        lines.append(f"lidar_scan_elapsed_seconds {elapsed:.1f}")
+
+    # Network cache (use cached data to avoid slow calls)
+    net = _network_cache.get("data")
+    if net:
+        lines.append(f'lidar_eth0_up {1 if net.get("eth0", {}).get("up") else 0}')
+        lines.append(f'lidar_connected {1 if net.get("lidar_connected") else 0}')
+        lt = net.get("lidar_topic", {})
+        lines.append(f'lidar_driver_active {1 if lt.get("active") else 0}')
+        st = net.get("slam_topic", {})
+        lines.append(f'lidar_slam_active {1 if st.get("active") else 0}')
+
+    # Session count
+    session_count = len(_list_sessions()) if SCAN_DATA_DIR.exists() else 0
+    lines.append(f"lidar_session_count {session_count}")
+
+    body = "\n".join(lines) + "\n"
+    return Response(content=body, media_type="text/plain; charset=utf-8")
 
 
 # ---------------------------------------------------------------------------

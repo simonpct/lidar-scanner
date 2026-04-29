@@ -104,7 +104,7 @@
     border-radius: 8px; padding: 10px; margin-top: 6px;
     max-height: 150px; overflow-y: auto;
     font-family: monospace; font-size: 0.75rem; color: var(--muted);
-    line-height: 1.5;
+    line-height: 1.5; white-space: pre-wrap; word-break: break-all;
   }
 
   /* Sessions list */
@@ -136,6 +136,15 @@
 <body>
 
 <h1><span class="dot" id="alive-dot"></span> LiDAR Scanner</h1>
+
+<!-- Foxglove link -->
+<div class="card full" style="margin-bottom:16px; padding:10px 14px; display:flex; align-items:center; justify-content:space-between;">
+  <div>
+    <span style="font-size:0.75rem; color:var(--muted); text-transform:uppercase; letter-spacing:0.08em;">Vue 3D</span>
+    <div style="font-size:0.85rem; margin-top:2px;">Foxglove Studio</div>
+  </div>
+  <a id="foxglove-link" href="#" target="_blank" class="btn btn-lidar-muted" style="text-decoration:none; font-size:0.8rem; padding:8px 12px;">Ouvrir</a>
+</div>
 
 <div class="grid">
   <!-- Stockage -->
@@ -193,11 +202,23 @@
     <h2>Contrôle LiDAR</h2>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="btn btn-lidar" onclick="lidarCmd('start')">Démarrer</button>
-      <button class="btn btn-lidar btn-lidar-warn" onclick="lidarCmd('stop')">Arrêter</button>
+      <button class="btn btn-lidar btn-lidar-warn" onclick="if(confirm('Arrêter le LiDAR ? Le driver devra être redémarré.')) lidarCmd('stop')">Arrêter</button>
       <button class="btn btn-lidar btn-lidar-muted" onclick="lidarCmd('reset')">Reset</button>
       <button class="btn btn-lidar btn-lidar-muted" onclick="lidarCmd('sync')">Sync horloge</button>
     </div>
     <div class="sub" id="lidar-cmd-status" style="margin-top:8px;"></div>
+  </div>
+
+  <!-- Mode WiFi : client / hotspot / dual -->
+  <div class="card full" id="wifi-mode">
+    <h2>Mode WiFi</h2>
+    <div class="sub" id="wifi-mode-info" style="margin-bottom:8px;">--</div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      <button class="btn btn-lidar" id="wifi-btn-client" onclick="wifiMode('client')">Client</button>
+      <button class="btn btn-lidar" id="wifi-btn-hotspot" onclick="wifiSwitchToHotspot()">Hotspot</button>
+      <button class="btn btn-lidar" id="wifi-btn-dual" onclick="wifiMode('dual')">Dual (STA+AP)</button>
+    </div>
+    <div class="sub" id="wifi-cmd-status" style="margin-top:8px;"></div>
   </div>
 </div>
 
@@ -219,7 +240,8 @@
           <input type="checkbox" id="scan-slam" checked style="width:18px; height:18px; accent-color:var(--green);"> SLAM
         </label>
       </div>
-      <button class="btn btn-start" id="btn-start" onclick="startScan()">Lancer le scan</button>
+      <button class="btn btn-start" id="btn-start" onclick="startScan()" disabled>Lancer le scan</button>
+      <div class="sub" id="preflight-status" style="margin-top:6px; color:var(--red);"></div>
     </div>
   </div>
   <div id="scan-running" style="display:none;">
@@ -346,6 +368,8 @@ function updateUI(d) {
     $('scan-running').style.display = 'none';
     $('scan-card').classList.remove('scan-active');
     $('lidar-controls').style.display = 'block';
+    // Preflight check
+    updatePreflight(d.network);
   }
 
   // Dernier scan (logs persistants même après arrêt)
@@ -411,9 +435,14 @@ function updateTopic(info) {
 function updateSlam(info) {
   const dot = $('slam-dot');
   const el = $('slam-info');
-  if (!info) { dot.className = 'status-dot off'; el.textContent = 'non disponible'; return; }
-  dot.className = info.active ? 'status-dot ok' : 'status-dot off';
-  el.textContent = info.active ? 'FAST-LIO2 actif' : 'inactif';
+  if (!info) { dot.className = 'status-dot warn'; el.textContent = 'non installé'; return; }
+  if (info.active) {
+    dot.className = 'status-dot ok';
+    el.textContent = 'FAST-LIO2 actif';
+  } else {
+    dot.className = 'status-dot warn';
+    el.textContent = 'en attente (démarre avec le scan)';
+  }
 }
 
 function updateWlan(info) {
@@ -509,6 +538,87 @@ async function lidarCmd(cmd) {
   fetchStatus();
 }
 
+async function wifiMode(mode) {
+  const statusEl = $('wifi-cmd-status');
+  statusEl.textContent = 'Bascule en mode ' + mode + '...';
+  // Highlight le bouton actif
+  ['client','hotspot','dual'].forEach(m => {
+    const b = $('wifi-btn-'+m);
+    if (b) b.style.opacity = (m === mode) ? '0.6' : '1';
+  });
+  try {
+    const r = await fetch('/api/network/mode/' + mode, { method: 'POST' });
+    const d = await r.json();
+    if (d.ok) {
+      statusEl.textContent = 'Mode actif : ' + d.mode;
+      updateWifiMode(d);
+    } else {
+      statusEl.textContent = 'Erreur : ' + (d.error || 'inconnue');
+    }
+    setTimeout(() => { statusEl.textContent = ''; }, 5000);
+  } catch (e) {
+    statusEl.textContent = 'Erreur : ' + e.message;
+  }
+}
+
+async function wifiSwitchToHotspot() {
+  // Avertit l'utilisateur que le SSH/dashboard via WiFi maison va couper
+  const ok = confirm(
+    "Le Pi va devenir un point d'accès WiFi 'LidarScanner'.\n\n" +
+    "1. Connecte-toi au WiFi 'LidarScanner' (mot de passe: lidarscan)\n" +
+    "2. Réouvre le dashboard sur http://192.168.4.1:8080\n\n" +
+    "Si tu es actuellement connecté via Freebox/maison, tu vas perdre l'accès\n" +
+    "jusqu'à ce que tu rejoignes 'LidarScanner'.\n\n" +
+    "Continuer ?"
+  );
+  if (!ok) return;
+  wifiMode('hotspot');
+}
+
+function updateWifiMode(d) {
+  const info = $('wifi-mode-info');
+  if (!d || !d.sta) { info.textContent = '--'; return; }
+  let parts = [];
+  parts.push('Mode : ' + d.mode);
+  if (d.sta && d.sta.connected) {
+    parts.push('STA : ' + (d.sta.ssid || '?') + (d.sta.ip ? ' (' + d.sta.ip + ')' : ''));
+  }
+  if (d.ap && d.ap.active) {
+    parts.push('AP : ' + d.ap.ssid + ' (' + d.ap.ip + ', ' + d.ap.clients + ' client' + (d.ap.clients !== 1 ? 's' : '') + ')');
+  }
+  info.textContent = parts.join(' · ');
+  // Highlight le mode actif
+  ['client','hotspot','dual'].forEach(m => {
+    const b = $('wifi-btn-'+m);
+    if (b) b.style.opacity = (m === d.mode) ? '0.6' : '1';
+  });
+}
+
+async function fetchWifiMode() {
+  try {
+    const r = await fetch('/api/network/status');
+    const d = await r.json();
+    if (d.ok) updateWifiMode(d);
+  } catch (e) { /* silent */ }
+}
+
+function updatePreflight(net) {
+  const btn = $('btn-start');
+  const status = $('preflight-status');
+  const issues = [];
+
+  if (!net.lidar_connected) issues.push('LiDAR non connecté');
+  if (!net.lidar_topic || !net.lidar_topic.active) issues.push('Driver inactif');
+
+  if (issues.length > 0) {
+    btn.disabled = true;
+    status.textContent = issues.join(' · ');
+  } else {
+    btn.disabled = false;
+    status.textContent = '';
+  }
+}
+
 async function startScan() {
   const name = $('scan-name').value.trim() || undefined;
   const interval = parseFloat($('scan-interval').value) || 2;
@@ -563,9 +673,16 @@ async function fetchLogs() {
   } catch {}
 }
 
+// Foxglove link (dynamic hostname)
+const piHost = window.location.hostname;
+const foxgloveUrl = `foxglove://open?ds=foxglove-websocket&ds.url=ws://${piHost}:8765`;
+$('foxglove-link').href = foxgloveUrl;
+
 // Polling
 fetchStatus();
 setInterval(fetchStatus, 2000);
+fetchWifiMode();
+setInterval(fetchWifiMode, 5000);
 </script>
 </body>
 </html>

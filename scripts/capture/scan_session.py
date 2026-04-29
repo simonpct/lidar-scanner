@@ -63,12 +63,16 @@ class ScanSession:
     def start_rosbag(self):
         """Lance l'enregistrement rosbag en arrière-plan."""
         bag_path = self.lidar_dir / f"rosbag_{self.name}"
-        cmd = [
-            "ros2", "bag", "record",
-            *self.ros_topics,
-            "-o", str(bag_path),
-        ]
-        print(f"Démarrage rosbag: {' '.join(cmd)}")
+        topics = " ".join(self.ros_topics)
+        # Wrapper bash qui source ROS2 pour garantir le DDS discovery
+        bash_cmd = (
+            "source /opt/ros/jazzy/setup.bash && "
+            "source ~/unilidar_sdk2/unitree_lidar_ros2/install/setup.bash 2>/dev/null; "
+            "source ~/fastlio_ws/install/setup.bash 2>/dev/null; "
+            f"ros2 bag record {topics} -o {bag_path}"
+        )
+        cmd = ["bash", "-c", bash_cmd]
+        print(f"Démarrage rosbag: ros2 bag record {topics} -o {bag_path}")
         self.rosbag_process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,

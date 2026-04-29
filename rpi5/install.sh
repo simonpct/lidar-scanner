@@ -10,7 +10,10 @@
 #   bash ~/lidar-scanner/rpi5/install.sh
 # =============================================================================
 
-set -euo pipefail
+# -e : abort sur erreur, -o pipefail : abort si commande dans pipe échoue.
+# Pas de -u : les scripts ROS2 (setup.bash) référencent des variables non
+# définies (AMENT_TRACE_SETUP_FILES, etc.) et plantent en strict mode.
+set -eo pipefail
 
 REPO_URL="https://github.com/simonpct/lidar-scanner.git"
 SDK_URL="https://github.com/unitreerobotics/unilidar_sdk2.git"
@@ -66,9 +69,14 @@ if [ ! -d /opt/ros/jazzy ]; then
     sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
     sudo apt update
-    sudo apt install -y ros-jazzy-desktop ros-jazzy-pcl-ros
+    sudo apt install -y ros-jazzy-desktop ros-jazzy-pcl-ros ros-jazzy-foxglove-bridge \
+                        python3-colcon-common-extensions python3-rosdep python3-vcstool
 else
     warn "ROS2 Jazzy déjà installé"
+    # colcon peut manquer même si ROS2 est là (ex: install incomplète)
+    if ! command -v colcon &>/dev/null; then
+        sudo apt install -y python3-colcon-common-extensions python3-rosdep python3-vcstool
+    fi
 fi
 
 # Check
@@ -107,6 +115,37 @@ if [ -f "$SDK_DIR/unitree_lidar_sdk/include/unitree_lidar_sdk.h" ]; then
     ok "SDK header trouvé"
 else
     fail "SDK header introuvable"
+fi
+
+# Patch: convertir les timestamps absolus en relatifs (ms) pour compatibilité FAST-LIO
+step "Patch timestamps driver Unitree"
+SDK_PCL_H="$SDK_DIR/unitree_lidar_sdk/include/unitree_lidar_sdk_pcl.h"
+if grep -q "pt.time = cloudIn.points\[i\].time;" "$SDK_PCL_H" 2>/dev/null; then
+    sed -i '/void transformUnitreeCloudToPCL/,/^}/c\
+void transformUnitreeCloudToPCL(const PointCloudUnitree \&cloudIn, pcl::PointCloud<PointType>::Ptr cloudOut)\
+{\
+    cloudOut->clear();\
+    if (cloudIn.points.empty()) return;\
+\
+    // FAST-LIO expects relative time in ms (0 to ~100 for 10Hz scan)\
+    // Unitree SDK provides absolute time in seconds — convert to relative ms\
+    float t0 = cloudIn.points[0].time;\
+\
+    PointType pt;\
+    for (size_t i = 0; i < cloudIn.points.size(); i++)\
+    {\
+        pt.x = cloudIn.points[i].x;\
+        pt.y = cloudIn.points[i].y;\
+        pt.z = cloudIn.points[i].z;\
+        pt.intensity = cloudIn.points[i].intensity;\
+        pt.time = (cloudIn.points[i].time - t0) * 1000.0f;  // relative ms\
+        pt.ring = cloudIn.points[i].ring;\
+        cloudOut->push_back(pt);\
+    }\
+}' "$SDK_PCL_H"
+    ok "Timestamps patchés (absolu → relatif ms)"
+else
+    warn "Patch timestamps déjà appliqué ou fichier non trouvé"
 fi
 
 # Compiler le driver ROS2
@@ -278,6 +317,15 @@ else
     fail "lidar_mode non installé"
 fi
 
+# Installer network_mode.sh (bascule WiFi client/hotspot/dual)
+step "Installation de network_mode.sh"
+sudo install -m 0755 "$INSTALL_DIR/rpi5/network_mode.sh" /usr/local/bin/network_mode.sh
+if [ -x /usr/local/bin/network_mode.sh ]; then
+    ok "network_mode.sh installé"
+else
+    fail "network_mode.sh non installé"
+fi
+
 # =============================================================================
 # 7. Configuration réseau — Ethernet pour LiDAR
 # =============================================================================
@@ -310,9 +358,50 @@ else
 fi
 
 # =============================================================================
-# 8. Service systemd — Dashboard
+# 8. Monitoring — Prometheus + node_exporter
+# =============================================================================
+step "Installation du monitoring (Prometheus + node_exporter)"
+
+sudo apt install -y prometheus-node-exporter
+
+# Check node_exporter
+if systemctl is-active --quiet prometheus-node-exporter; then
+    ok "node_exporter actif sur :9100"
+else
+    sudo systemctl enable prometheus-node-exporter
+    sudo systemctl start prometheus-node-exporter
+    if systemctl is-active --quiet prometheus-node-exporter; then
+        ok "node_exporter démarré"
+    else
+        fail "node_exporter n'a pas démarré"
+    fi
+fi
+
+# Prometheus local (léger, stockage 24h, remote_write vers le Mac)
+if ! command -v prometheus &>/dev/null; then
+    sudo apt install -y prometheus
+fi
+
+# Config Prometheus
+sudo cp "$INSTALL_DIR/rpi5/config/prometheus.yml" /etc/prometheus/prometheus.yml
+sudo systemctl restart prometheus
+
+# Check
+if systemctl is-active --quiet prometheus; then
+    ok "Prometheus actif sur :9091"
+else
+    warn "Prometheus non actif (sera configuré manuellement)"
+fi
+
+# Réduire la rétention à 24h pour économiser l'espace disque
+sudo sed -i 's/--storage.tsdb.retention.time=.*/--storage.tsdb.retention.time=24h/' /etc/default/prometheus 2>/dev/null || true
+
+# =============================================================================
+# 9. Service systemd — Dashboard
 # =============================================================================
 step "Installation du service systemd (dashboard)"
+
+# Note: le step 8 installe le monitoring
 
 sudo tee /etc/systemd/system/lidar-dashboard.service > /dev/null << EOF
 [Unit]
@@ -429,7 +518,43 @@ else
 fi
 
 # =============================================================================
-# 11. Sudoers pour systemctl sans mot de passe (dashboard)
+# 11. Service systemd — Foxglove Bridge (visualisation 3D)
+# =============================================================================
+step "Installation du service Foxglove Bridge"
+
+# Installer si pas déjà fait
+sudo apt install -y ros-jazzy-foxglove-bridge 2>/dev/null || true
+
+sudo tee /etc/systemd/system/foxglove-bridge.service > /dev/null << EOF
+[Unit]
+Description=Foxglove Bridge (WebSocket ROS2)
+After=lidar-driver.service
+
+[Service]
+Type=simple
+User=$USER
+ExecStart=/bin/bash -c "source /opt/ros/jazzy/setup.bash && source $SDK_DIR/unitree_lidar_ros2/install/setup.bash 2>/dev/null && source $FASTLIO_WS/install/setup.bash 2>/dev/null && ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765"
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable foxglove-bridge
+sudo systemctl start foxglove-bridge
+
+# Check
+sleep 2
+if systemctl is-active --quiet foxglove-bridge; then
+    ok "Foxglove Bridge actif sur :8765"
+else
+    warn "Foxglove Bridge non actif"
+fi
+
+# =============================================================================
+# 12. Sudoers pour systemctl sans mot de passe (dashboard)
 # =============================================================================
 step "Configuration sudoers pour le dashboard"
 SUDOERS_FILE="/etc/sudoers.d/lidar-scanner"
@@ -439,6 +564,7 @@ $USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop lidar-slam
 $USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart lidar-slam
 $USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart lidar-dashboard
 $USER ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart lidar-driver
+$USER ALL=(ALL) NOPASSWD: /usr/local/bin/network_mode.sh
 EOF
 sudo chmod 440 "$SUDOERS_FILE"
 

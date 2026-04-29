@@ -1,0 +1,27 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Remote write vers le Mac quand disponible
+remote_write:
+  - url: "http://macbook.local:9090/api/v1/write"
+    remote_timeout: 5s
+    queue_config:
+      capacity: 10000
+      max_shards: 3
+      min_backoff: 1s
+      max_backoff: 60s
+      batch_send_deadline: 10s
+
+scrape_configs:
+  # Métriques système (node_exporter)
+  - job_name: "node"
+    static_configs:
+      - targets: ["localhost:9100"]
+
+  # Métriques LiDAR Scanner (dashboard)
+  - job_name: "lidar-scanner"
+    scrape_interval: 5s
+    static_configs:
+      - targets: ["localhost:8080"]
+    metrics_path: "/metrics"
