@@ -86,20 +86,31 @@ active_sta_connection() {
         | awk -F: -v iface="$AP_IFACE" '$2=="802-11-wireless" && $3==iface && $1!="'"$AP_CON"'" {print $1; exit}'
 }
 
-mode_client() {
-    ensure_ap_connection
-    nmcli con down "$AP_CON" 2>/dev/null || true
-    # Réactiver l'auto-connect des STA
+# Liste les noms des connexions STA (WiFi infrastructure), excluant l'AP.
+list_sta_connections() {
+    nmcli -t -f NAME,TYPE con show 2>/dev/null \
+        | awk -F: '$2=="802-11-wireless" {print $1}' \
+        | grep -vx "$AP_CON" || true
+}
+
+# Garantit que toutes les STA ont autoconnect=yes (point critique : sans ça,
+# au reboot, NM ne remonte aucun WiFi et le Pi devient injoignable).
+ensure_sta_autoconnect() {
     while IFS= read -r name; do
         [ -z "$name" ] && continue
         nmcli con modify "$name" connection.autoconnect yes 2>/dev/null || true
-    done < <(nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless" {print $1}' | grep -vx "$AP_CON" || true)
-    # Connecter au WiFi le plus prio (autoconnect-priority le plus haut)
+    done < <(list_sta_connections)
+}
+
+mode_client() {
+    ensure_ap_connection
+    ensure_sta_autoconnect
+    nmcli con down "$AP_CON" 2>/dev/null || true
     nmcli device wifi rescan 2>/dev/null || true
     sleep 2
-    # Si rien n'est actif, tenter de remonter une connexion connue
+    # Si NM n'a pas remonté de STA tout seul, en forcer une
     if [ -z "$(active_sta_connection)" ]; then
-        for name in $(nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless" {print $1}' | grep -vx "$AP_CON"); do
+        for name in $(list_sta_connections); do
             nmcli con up "$name" 2>/dev/null && break || true
         done
     fi
@@ -107,12 +118,12 @@ mode_client() {
 
 mode_hotspot() {
     ensure_ap_connection
-    # Couper toutes les STA
+    ensure_sta_autoconnect   # autoconnect reste yes — on coupe juste la session
+    # Couper la session STA actuelle (sans toucher autoconnect)
     while IFS= read -r name; do
         [ -z "$name" ] && continue
         nmcli con down "$name" 2>/dev/null || true
-        nmcli con modify "$name" connection.autoconnect no 2>/dev/null || true
-    done < <(nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless" {print $1}' | grep -vx "$AP_CON" || true)
+    done < <(list_sta_connections)
     sleep 1
     align_ap_channel_to_sta   # pas de STA → 2.4 GHz canal 6
     nmcli con up "$AP_CON"
@@ -120,15 +131,10 @@ mode_hotspot() {
 
 mode_dual() {
     ensure_ap_connection
-    # Garder la STA active + monter l'AP
-    # Réactiver autoconnect des STA
-    while IFS= read -r name; do
-        [ -z "$name" ] && continue
-        nmcli con modify "$name" connection.autoconnect yes 2>/dev/null || true
-    done < <(nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless" {print $1}' | grep -vx "$AP_CON" || true)
+    ensure_sta_autoconnect
     # Si aucune STA active, en monter une
     if [ -z "$(active_sta_connection)" ]; then
-        for name in $(nmcli -t -f NAME,TYPE con show | awk -F: '$2=="802-11-wireless" {print $1}' | grep -vx "$AP_CON"); do
+        for name in $(list_sta_connections); do
             nmcli con up "$name" 2>/dev/null && break || true
         done
         sleep 3   # laisser le temps à la STA de s'associer

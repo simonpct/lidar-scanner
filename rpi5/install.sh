@@ -327,6 +327,31 @@ else
     fail "network_mode.sh non installé"
 fi
 
+# Filet de sécurité réseau au boot — si aucune connexion après 60s, lance l'AP
+step "Installation du service de récupération réseau"
+sudo install -m 0755 "$INSTALL_DIR/rpi5/network_recovery.sh" /usr/local/bin/network_recovery.sh
+
+sudo tee /etc/systemd/system/lidar-network-recovery.service > /dev/null << 'EOF'
+[Unit]
+Description=LiDAR Scanner — fallback AP si aucune connexion WiFi au boot
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/network_recovery.sh
+RemainAfterExit=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable lidar-network-recovery.service
+ok "Service lidar-network-recovery activé (lance l'AP si aucun WiFi après 60s)"
+
 # =============================================================================
 # 7. Configuration réseau — Ethernet pour LiDAR
 # =============================================================================
